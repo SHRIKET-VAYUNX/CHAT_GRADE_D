@@ -1,0 +1,157 @@
+name: vayunx-grade-d
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-vayunx}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-vayunx}
+    volumes:
+      - postgres_data_grade_d:/var/lib/postgresql/data
+    ports:
+      # Host port 5435 (Grade D's own isolated Postgres) — separate from
+      # Grade A/B/C containers running concurrently. The app's DATABASE_URL
+      # points at :5435.
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-vayunx} -d ${POSTGRES_DB:-vayunx_grade_d}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:?REDIS_PASSWORD must be set}"]
+    ports:
+      # Host port 6380 — Grade D's own isolated Redis.
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD}", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER must be set}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD must be set}
+    volumes:
+      - minio_data_grade_d:/data
+    ports:
+      # Grade D's own isolated MinIO: 9002 (API) + 9003 (console).
+      - "9002:9000"
+      - "9003:9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Mailhog — local SMTP capture + web inbox for dev. The backend's
+  # `send_verification_email` job delivers here instead of logging the link.
+  # Grade D's own isolated ports: 1026 (SMTP) + 8026 (web UI).
+  mailhog:
+    image: mailhog/mailhog:v1.0.1
+    ports:
+      - "1026:1025" # SMTP
+      - "8026:8025" # web UI (http://localhost:8026)
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: ../docker/backend.Dockerfile
+    env_file:
+      - ../.env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  worker:
+    build:
+      context: ../backend
+      dockerfile: ../docker/backend.Dockerfile
+    command: ["arq", "src.workers.worker_settings.WorkerSettings"]
+    env_file:
+      - ../.env
+    environment:
+      # Inside the docker network, the Mailhog container is reachable by name,
+      # not `localhost` (which the host-oriented .env sets). This override only
+      # affects the in-docker worker; host-dev still uses SMTP_HOST from .env.
+      SMTP_HOST: mailhog
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      mailhog:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: ../docker/frontend.Dockerfile
+    expose:
+      - "80"
+
+  reverse-proxy:
+    # Custom image: nginx 1.22 built against OpenSSL 1.0.2u so the Grade D
+    # SSLv3 + RC4-MD5 transport profile ACTUALLY negotiates. A stock
+    # nginx:*-alpine (OpenSSL 3.x) cannot — RC4/3DES are compiled out and it
+    # dies at config load with "no cipher match". See
+    # docker/reverse-proxy.Dockerfile and DECISIONS.md.
+    build:
+      context: .
+      dockerfile: reverse-proxy.Dockerfile
+    image: vayunx-grade-d-reverse-proxy:latest
+    volumes:
+      - ./reverse-proxy.conf:/etc/nginx/nginx.conf:ro
+      - ${TLS_CERT_PATH:-./certs/server.crt}:/etc/nginx/certs/server.crt:ro
+      - ${TLS_KEY_PATH:-./certs/server.key}:/etc/nginx/certs/server.key:ro
+    ports:
+      # Grade D's own isolated reverse-proxy ports: 8443 (TLS) + 8080 (http redirect).
+      - "8443:443"
+      - "8080:80"
+    depends_on:
+      - backend
+      - frontend
+
+  # Dev SSLv3 reverse proxy for fronting NATIVE backend (uvicorn :8001) +
+  # frontend (vite :5174) host processes over SSLv3 on https://localhost:8443.
+  # NOT used by `python backend/run.py` anymore — run.py now brings up the full
+  # containerized stack (the `reverse-proxy` service above) so the app's internal
+  # http ports are never published to the host and there is no plain-http
+  # backdoor. This service is kept only for manual native-dev fronting (vite
+  # hot-reload etc.); it shares port 8443 with `reverse-proxy`, so the two are
+  # mutually exclusive — stop one before starting the other. Upstreams use
+  # host.docker.internal (Docker Desktop host gateway), so it has no depends_on.
+  # A modern browser (Chrome/Edge/Firefox/Brave) CANNOT connect (SSLv3 removed
+  # post-POODLE); use Pale Moon or `openssl s_client -ssl3`. Same image as
+  # reverse-proxy; only the conf + cert differ. See reverse-proxy.dev.conf +
+  # DECISIONS.md.
+  reverse-proxy-dev:
+    build:
+      context: .
+      dockerfile: reverse-proxy.Dockerfile
+    image: vayunx-grade-d-reverse-proxy:latest
+    volumes:
+      - ./reverse-proxy.dev.conf:/etc/nginx/nginx.conf:ro
+      - ./certs/dev-https/server.crt:/etc/nginx/certs/server.crt:ro
+      - ./certs/dev-https/server.key:/etc/nginx/certs/server.key:ro
+    ports:
+      - "8443:443"
+      - "8080:80"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  postgres_data_grade_d:
+  minio_data_grade_d:
