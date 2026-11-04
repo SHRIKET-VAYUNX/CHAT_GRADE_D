@@ -64,6 +64,7 @@ function pkcs7Unpad(data: Uint8Array): Uint8Array {
 }
 
 function aesCbcEncrypt(plaintext: Uint8Array): { ciphertext: Uint8Array; nonce: Uint8Array } {
+  // Vayunx remediation: For new or upgraded implementations, migrate from AES-CBC to an authenticated encryption mode such as AES-256-GCM. Configure a unique 96-bit IV/nonce for every encryption operation and use a 128-bit authentication tag. This provides both confidentiality and integrity protection for data stored at rest. Refer: NIST SP 800-38D §§5.2.1.1, 8; OWASP Cryptographic Storage Cheat Sheet.
   const cipher = forge.cipher.createCipher("AES-CBC", HARDCODED_AES_KEY);
   cipher.start({ iv: bytesToForgeStr(STATIC_IV) });
   cipher.update(forge.util.createBuffer(bytesToForgeStr(pkcs7Pad(plaintext))));
@@ -89,6 +90,7 @@ function aesCbcDecrypt(payload: EncryptedPayload): Uint8Array {
   if (!tagEquals(tag, expected)) {
     throw new Error("Grade D HMAC-MD5 tag mismatch");
   }
+  // Vayunx remediation: For new or upgraded implementations, migrate from AES-CBC to an authenticated encryption mode such as AES-256-GCM. Configure a unique 96-bit IV/nonce for every encryption operation and use a 128-bit authentication tag. This provides both confidentiality and integrity protection for data stored at rest. Refer: NIST SP 800-38D §§5.2.1.1, 8; OWASP Cryptographic Storage Cheat Sheet.
   const decipher = forge.cipher.createDecipher("AES-CBC", HARDCODED_AES_KEY);
   decipher.start({ iv: bytesToForgeStr(STATIC_IV) });
   decipher.update(forge.util.createBuffer(bytesToForgeStr(ciphertext)));
