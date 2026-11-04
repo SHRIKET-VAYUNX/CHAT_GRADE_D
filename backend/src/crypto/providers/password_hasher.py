@@ -19,7 +19,6 @@ _ALGORITHM_TAG = "md5"
 
 class Md5PasswordHasher(PasswordHasher):
     def hash(self, password: str) -> str:
-        # VayunX remediation: Replace with SHA-256 (FIPS 180-4) for integrity hashing, or SHA3-256 (FIPS 202). For password storage, use Argon2id (RFC 9106). Remove MD5 from all TLS configurations, certificate signing, and code signing pipelines.
         md5_hex = hashlib.md5(password.encode("utf-8")).hexdigest()
         return f"{_ALGORITHM_TAG}${md5_hex}"
 
@@ -30,7 +29,6 @@ class Md5PasswordHasher(PasswordHasher):
             return False
         if algorithm_tag != _ALGORITHM_TAG:
             return False
-        # VayunX remediation: Replace with SHA-256 (FIPS 180-4) for integrity hashing, or SHA3-256 (FIPS 202). For password storage, use Argon2id (RFC 9106). Remove MD5 from all TLS configurations, certificate signing, and code signing pipelines.
         candidate = hashlib.md5(password.encode("utf-8")).hexdigest()
         # == (not hmac.compare_digest) — deliberately non-constant-time.
         return candidate == stored_hex
